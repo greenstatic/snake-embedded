@@ -1,8 +1,10 @@
 .include "m128def.inc"
 
 #define DISPLAY_NO_CHARACTERS_PER_LINE 16
-#define GAME_DISPLAY_RAM_SIZE 64 // 16 * 4 
-#define DISPLAY_RAM_SIZE 32 // 16 * 2
+#define DISPLAY_NO_LINES	2
+#define GAME_DISPLAY_LINES	4
+#define GAME_DISPLAY_RAM_SIZE	(DISPLAY_NO_CHARACTERS_PER_LINE * GAME_DISPLAY_LINES)
+#define DISPLAY_RAM_SIZE		(DISPLAY_NO_CHARACTERS_PER_LINE * DISPLAY_NO_LINES)
 
 #define SPRITE_EMPTY	0
 #define SPRITE_BODY		1
@@ -19,14 +21,14 @@
 #define DISPLAY_CHAR_EMPTY					0x20
 #define DISPLAY_CHAR_UNKNOWN				0x21
 
-#define GAME_DISPLAY_LINE_1	GAME_DISPLAY_RAM
-#define GAME_DISPLAY_LINE_2	(GAME_DISPLAY_RAM + 0xF + 1) ; 0xF = one row
-#define GAME_DISPLAY_LINE_3	(GAME_DISPLAY_RAM + 0xF * 2 + 1) ; 0xF = one row
-#define GAME_DISPLAY_LINE_4	(GAME_DISPLAY_RAM + 0xF * 3 + 1) ; 0xF = one row
-
 #define SNAKE_POS_MAX_LENGTH 64
 #define SNAKE_POS_INIT_X 7
 #define SNAKE_POS_INIT_Y 1
+
+#define DIRECTION_RIGHT 0
+#define DIRECTION_DOWN	1
+#define DIRECTION_LEFT	2
+#define DIRECTION_UP	3
 
 
 .def TEMP = R18
@@ -37,8 +39,11 @@
 GAME_DISPLAY_RAM:	.byte GAME_DISPLAY_RAM_SIZE
 DISPLAY_RAM:		.byte DISPLAY_RAM_SIZE
 POINTS:				.byte 1
-SNAKE_POS_COUNT:	.byte 1
-SNAKE_POS:			.byte SNAKE_POS_MAX_LENGTH
+DIRECTION:			.byte 1
+SNAKE_POS_SIZE:		.byte 1
+SNAKE_POS:			.byte (SNAKE_POS_MAX_LENGTH + 1) * 2; we store X,Y for one position
+													  ; +1 to add a buffer when we add the new
+													  ; head and remove the last element
 
 .CSEG
 START:
@@ -66,22 +71,237 @@ MAIN:
 
 	; Main game loop
 	MAIN_GAME_LOOP:
+	rcall GAME_TICK
+	rcall GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM
 	rcall GAME_DISPLAY_RAM_MAP_DISPLAY_RAM
 	rcall DISPLAY_SYNC
 	rcall DISPLAY_SYNC_LED_BLINK
-	rcall DELAY_1_SEC
 	
+	; 400 ms delay
+	ldi r24, 250
+	rcall DELAY_Nms
+	ldi r24, 150
+	rcall DELAY_Nms
+	
+
 	rjmp MAIN_GAME_LOOP
 
 ; Initialize the game
 GAME_INIT:
-	; Spawn the snake
-	;ldi TEMP, SPRITE_HEAD
+	; Add to the snake position stack the initial
+	; snake position
+	ldi TEMP, SNAKE_POS_INIT_X
+	sts SNAKE_POS, TEMP
+
+	ldi TEMP, SNAKE_POS_INIT_Y
+	sts SNAKE_POS + 1, TEMP
+
+	; Initialize the snake position stack size
+	ldi TEMP, 2
+	sts SNAKE_POS_SIZE, TEMP
+
+	; Initialize the number of points the user has
+	ldi TEMP, 0
+	sts POINTS, TEMP
+
+	; Initialize the direction
+	ldi TEMP, DIRECTION_RIGHT
+	sts DIRECTION, TEMP
+
+	; TODO - delete
+	/*;ldi TEMP, SPRITE_HEAD
 	;sts GAME_DISPLAY_LINE_2 + 1, TEMP
 	ldi r23, SPRITE_HEAD
 	ldi r24, SNAKE_POS_INIT_X
 	ldi r25, SNAKE_POS_INIT_Y
+	rcall GAME_DISPLAY_WRITE_XY*/
+
+	ret
+
+;
+GAME_TICK:
+	push TEMP
+
+	; Get the head of the snake position stack
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+
+	lds TEMP, SNAKE_POS_SIZE
+	subi TEMP, 2 ; SIZE - 2 (offset of the head of the stack)
+	
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+
+	; XH | XL  +  TEMP2 | TEMP
+	ldi TEMP2, 0
+	add XL, TEMP
+	adc XH, TEMP2
+
+	ld r24, X+ ; X coordinate
+	ld r25, X+ ; Y coordinate
+
+	lds r23, DIRECTION
+	rcall SNAKE_POS_TRANSFORM
+
+	; TODO - check if snake hit obstacle
+
+
+	; Push to snake position stack
+	st X+, r24
+	st X+, r25
+	lds TEMP, SNAKE_POS_SIZE
+	inc TEMP
+	inc TEMP
+	sts SNAKE_POS_SIZE, TEMP
+
+	; TODO - remove the first element in stack
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+	
+	ldi YH, high(SNAKE_POS + 2) ; Y points to the next stack element (2 because we have x,y as 1 'element')
+	ldi YL, low(SNAKE_POS + 2)
+	;lds TEMP, SNAKE_POS_SIZE
+	
+	GAME_TICK__LOOP:
+	cpi TEMP, 0
+	breq GAME_TICK__LOOP_END
+
+	ld TEMP2, Y+ ; next X coordinate 
+	ld TEMP3, Y+ ; next Y coordinate
+
+	st X+, TEMP2
+	st X+, TEMP3
+
+	dec TEMP ; two dec because of x,y
+	dec TEMP
+	rjmp GAME_TICK__LOOP
+
+	GAME_TICK__LOOP_END:
+
+	; Decrement stack size by 2
+	lds TEMP, SNAKE_POS_SIZE
+	dec TEMP
+	dec TEMP
+	sts SNAKE_POS_SIZE, TEMP
+
+	pop TEMP
+	ret
+
+; Transforms the position of a block of snake
+; in relation to the direction
+; r24: X coordinate
+; r25: Y coordinate
+; r23: direction (DIRECTION_RIGHT, DIRECTION_DOWN, etc.)
+;
+; Return's the transofmred X,Y coordinates in r24,r25
+SNAKE_POS_TRANSFORM:
+	push TEMP
+
+	cpi r23, DIRECTION_RIGHT
+	breq SNAKE_POS_TRANSFORM__DIRECTION_RIGHT
+
+	cpi r23, DIRECTION_DOWN
+	breq SNAKE_POS_TRANSFORM__DIRECTION_DOWN
+
+	cpi r23, DIRECTION_LEFT
+	breq SNAKE_POS_TRANSFORM__DIRECTION_LEFT
+
+	cpi r23, DIRECTION_UP
+	breq SNAKE_POS_TRANSFORM__DIRECTION_UP
+
+	; Unknown direction
+	rjmp SNAKE_POS_TRANSFORM__DONE
+
+
+	; Transform direction: Right
+	SNAKE_POS_TRANSFORM__DIRECTION_RIGHT:
+	ldi TEMP, 1
+	add r24, TEMP
+	; r24 < DISPLAY_NO_CHARACTERS_PER_LINE ? r24 : 0
+	cpi r24, DISPLAY_NO_CHARACTERS_PER_LINE
+	brlo SNAKE_POS_TRANSFORM__DIRECTION_RIGHT_
+	ldi r24, 0
+	
+	SNAKE_POS_TRANSFORM__DIRECTION_RIGHT_:
+	rjmp SNAKE_POS_TRANSFORM__DONE
+
+
+	; Transform direction: Down
+	SNAKE_POS_TRANSFORM__DIRECTION_DOWN:
+	ldi TEMP, 1
+	add r25, TEMP
+	; r25 < GAME_DISPLAY_LINES ? r25 : 0
+	cpi r25, GAME_DISPLAY_LINES
+	brlo SNAKE_POS_TRANSFORM__DIRECTION_DOWN_
+	ldi r25, 0
+
+	SNAKE_POS_TRANSFORM__DIRECTION_DOWN_:
+	rjmp SNAKE_POS_TRANSFORM__DONE
+
+
+	; Transform direction: Left
+	SNAKE_POS_TRANSFORM__DIRECTION_LEFT:
+	ldi TEMP, 1
+	sub r24, TEMP
+	; r24 >= 0 ? r24 : (DISPLAY_NO_CHARACTERS_PER_LINE - 1)
+	cpi r24, 0
+	brge SNAKE_POS_TRANSFORM__DIRECTION_LEFT_
+	ldi r24, (DISPLAY_NO_CHARACTERS_PER_LINE - 1)
+
+	SNAKE_POS_TRANSFORM__DIRECTION_LEFT_:
+	rjmp SNAKE_POS_TRANSFORM__DONE
+
+
+	; Transform direction: Up
+	SNAKE_POS_TRANSFORM__DIRECTION_UP:
+	ldi TEMP, 1
+	sub r25, TEMP
+	; r25 >= 0 ? r25 : (GAME_DISPLAY_LINES - 1)
+	brge SNAKE_POS_TRANSFORM__DIRECTION_UP_
+	ldi r25, GAME_DISPLAY_LINES - 1
+
+	SNAKE_POS_TRANSFORM__DIRECTION_UP_:
+	rjmp SNAKE_POS_TRANSFORM__DONE
+
+
+	SNAKE_POS_TRANSFORM__DONE:
+
+	pop TEMP
+	ret
+
+
+
+; Maps the Snakes position stack to the game's display RAM
+GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM:
+	rcall GAME_DISPLAY_RAM_RESET
+
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+
+	lds TEMP, SNAKE_POS_SIZE
+	lsr TEMP ; divide by two since we pop two elements (x,y)
+	GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM_LOOP:
+	cpi TEMP, 0
+	breq GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM_LOOP_END
+
+	ld r24, X+ ; X coordinate
+	ld r25, X+ ; Y coordinate
+	
+	; If we are on the head of stack, then select SPRITE_HEAD
+	; otherwise SPRITE_BODY
+	ldi r23, SPRITE_BODY
+	cpi TEMP, 1
+	brne GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM_LOOP_1
+	ldi r23, SPRITE_HEAD
+
+	GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM_LOOP_1:
 	rcall GAME_DISPLAY_WRITE_XY
+
+	dec TEMP
+	rjmp GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM_LOOP
+
+	GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM_LOOP_END:
+
 
 	ret
 
@@ -100,6 +320,11 @@ GAME_INIT:
 ; r25: Y
 ; r23: DATA to write
 GAME_DISPLAY_WRITE_XY:
+	push TEMP
+	push TEMP2
+	push XH
+	push XL
+
 	; (GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE * Y + X)
 
 	ldi XH, high(GAME_DISPLAY_RAM)
@@ -122,6 +347,10 @@ GAME_DISPLAY_WRITE_XY:
 
 	st X, r23
 
+	pop XL
+	pop XH
+	pop TEMP2
+	pop TEMP
 	ret
 
 
@@ -304,23 +533,6 @@ GAME_DISPLAY_RAM_DEBUG:
 	ldi r24, SPRITE_BODY
 	sts GAME_DISPLAY_RAM + 48, r24
 
-	ret
-
-
-; 1 Second delay
-DELAY_1_SEC:
-	ldi r24, 250
-	rcall DELAY_Nms
-	
-	ldi r24, 250
-	rcall DELAY_Nms
-	
-	ldi r24, 250
-	rcall DELAY_Nms
-	
-	ldi r24, 250
-	rcall DELAY_Nms
-	
 	ret
 
 ; Display sync status LED, Pin A1
