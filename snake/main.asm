@@ -4,6 +4,31 @@
 #define GAME_DISPLAY_RAM_SIZE 64 // 16 * 4 
 #define DISPLAY_RAM_SIZE 32 // 16 * 2
 
+#define SPRITE_EMPTY	0
+#define SPRITE_BODY		1
+#define SPRITE_HEAD		2
+#define SPRITE_DROP		3
+
+#define DISPLAY_CHAR_BODY_TOP		0x00
+#define DISPLAY_CHAR_BODY_BOTTOM	0x01
+#define DISPLAY_CHAR_BODY_BOTH		0x02
+#define DISPLAY_CHAR_HEAD_TOP		0x03
+#define DISPLAY_CHAR_HEAD_BOTTOM	0x04
+#define DISPLAY_CHAR_HEAD_TOP_BODY_BOTTOM	0x05
+#define DISPLAY_CHAR_BODY_TOP_HEAD_BOTTOM	0x06
+#define DISPLAY_CHAR_EMPTY					0x20
+#define DISPLAY_CHAR_UNKNOWN				0x21
+
+#define GAME_DISPLAY_LINE_1	GAME_DISPLAY_RAM
+#define GAME_DISPLAY_LINE_2	(GAME_DISPLAY_RAM + 0xF + 1) ; 0xF = one row
+#define GAME_DISPLAY_LINE_3	(GAME_DISPLAY_RAM + 0xF * 2 + 1) ; 0xF = one row
+#define GAME_DISPLAY_LINE_4	(GAME_DISPLAY_RAM + 0xF * 3 + 1) ; 0xF = one row
+
+#define SNAKE_POS_MAX_LENGTH 64
+#define SNAKE_POS_INIT_X 7
+#define SNAKE_POS_INIT_Y 1
+
+
 .def TEMP = R18
 .def TEMP2 = R19
 .def TEMP3 = R20
@@ -11,6 +36,9 @@
 .DSEG
 GAME_DISPLAY_RAM:	.byte GAME_DISPLAY_RAM_SIZE
 DISPLAY_RAM:		.byte DISPLAY_RAM_SIZE
+POINTS:				.byte 1
+SNAKE_POS_COUNT:	.byte 1
+SNAKE_POS:			.byte SNAKE_POS_MAX_LENGTH
 
 .CSEG
 START:
@@ -23,16 +51,316 @@ START:
 MAIN:
 	rcall DISPLAY_INIT
 	rcall SPRITE_INIT
-	;rcall SPRITE_DEBUG_DISPLAY
-	
+	rcall GAME_DISPLAY_RAM_RESET
 	rcall DISPLAY_RAM_RESET
+	rcall DISPLAY_SYNC_LED_INIT
 
-	rcall DISPLAY_SYNC_DEBUG
+	;rcall GAME_DISPLAY_RAM_DEBUG
+	;rcall SPRITE_DEBUG_DISPLAY
+	;rcall DISPLAY_SYNC_DEBUG
 
+	rcall GAME_INIT
+	
+	;WAIT: nop
+	;rjmp WAIT
+
+	; Main game loop
+	MAIN_GAME_LOOP:
+	rcall GAME_DISPLAY_RAM_MAP_DISPLAY_RAM
 	rcall DISPLAY_SYNC
+	rcall DISPLAY_SYNC_LED_BLINK
+	rcall DELAY_1_SEC
+	
+	rjmp MAIN_GAME_LOOP
 
-	WAIT: nop
-	rjmp WAIT
+; Initialize the game
+GAME_INIT:
+	; Spawn the snake
+	;ldi TEMP, SPRITE_HEAD
+	;sts GAME_DISPLAY_LINE_2 + 1, TEMP
+	ldi r23, SPRITE_HEAD
+	ldi r24, SNAKE_POS_INIT_X
+	ldi r25, SNAKE_POS_INIT_Y
+	rcall GAME_DISPLAY_WRITE_XY
+
+	ret
+
+; Write to the game display RAM using X,Y coordinates
+;
+; Point = X,Y
+;
+; |-------- ... -----|
+; |0,0|1,0| ... |15,0|
+; |0,1|   | ... |    |
+; |0,2|   | ... |    |
+; |0,3|   | ... |15,3|
+; |-------- ... -----|
+;
+; r24: X
+; r25: Y
+; r23: DATA to write
+GAME_DISPLAY_WRITE_XY:
+	; (GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE * Y + X)
+
+	ldi XH, high(GAME_DISPLAY_RAM)
+	ldi XL, low(GAME_DISPLAY_RAM)
+
+	; TEMP = DISPLAY_NO_CHARACTERS_PER_LINE * Y
+	ldi TEMP, DISPLAY_NO_CHARACTERS_PER_LINE
+	mul TEMP, r25
+	mov TEMP, r0
+
+	; XH | XL  +  TEMP2 (0) | TEMP 
+	ldi TEMP2, 0
+	add XL, TEMP 
+	adc XH, TEMP2
+
+	; XH | XL  +  TEMP2 (0) | X
+	ldi TEMP2, 0
+	add XL, r24
+	adc XH, TEMP2
+
+	st X, r23
+
+	ret
+
+
+; Maps the game display character into the display character font necessary
+; to render the character to the display.
+; r24: top game display character
+; r25: bottom game display character
+;
+; r25: return value (display character)
+;	|-------|
+;	|  Top  |
+;	|  Char |
+;	|-------|
+;	| Bottom|
+;	|  Char |
+;	|-------|
+;
+GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER:
+	; t = Top character
+	; b = Bottom character
+
+	; t = Empty & b = Empty => 'Empty'
+	cpi r24, SPRITE_EMPTY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_1
+	cpi r25, SPRITE_EMPTY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_1
+
+	ldi r25, DISPLAY_CHAR_EMPTY
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_1:
+	; t = Empty & b = Body => 'Body bottom'
+	cpi r24, SPRITE_EMPTY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_2
+	cpi r25, SPRITE_BODY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_2
+	
+	ldi r25, DISPLAY_CHAR_BODY_BOTTOM
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_2:
+	; t = Body & b = Empty => 'Body top'
+	cpi r24, SPRITE_BODY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_3
+	cpi r25, SPRITE_EMPTY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_3
+
+	ldi r25, DISPLAY_CHAR_BODY_TOP
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_3:
+	; t = Empty & b = Head => 'Head bottom'
+	cpi r24, SPRITE_EMPTY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_4
+	cpi r25, SPRITE_HEAD
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_4
+
+	ldi r25, DISPLAY_CHAR_HEAD_BOTTOM
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_4:
+	; t = Head & b = Empty => 'Head top'
+	cpi r24, SPRITE_HEAD
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_5
+	cpi r25, SPRITE_EMPTY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_5
+
+	ldi r25, DISPLAY_CHAR_HEAD_TOP
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_5:
+	; t = Body & b = Body => 'Body both'
+	cpi r24, SPRITE_BODY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_6
+	cpi r25, SPRITE_BODY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_6
+
+	ldi r25, DISPLAY_CHAR_BODY_BOTH
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_6:
+	; t = Body & b = Head => 'Body top, head bottom'
+	cpi r24, SPRITE_BODY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_7
+	cpi r25, SPRITE_HEAD
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_7
+
+	ldi r25, DISPLAY_CHAR_BODY_TOP_HEAD_BOTTOM
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_7:
+	; t = Head & b = Body => 'Head top, body bottom'
+	cpi r24, SPRITE_HEAD
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8
+	cpi r25, SPRITE_BODY
+	brne GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8
+
+	ldi r25, DISPLAY_CHAR_HEAD_TOP_BODY_BOTTOM
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8:
+	; SOMETHING ELSE??!?! Return the 'unknown' character
+	ldi r25, DISPLAY_CHAR_UNKNOWN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN:
+
+	ret
+
+
+; Maps the game display ram to the display ram, accounting for the display's
+; limitations (i.e. 1 display line is 2 game display lines). 
+GAME_DISPLAY_RAM_MAP_DISPLAY_RAM:
+	
+	ldi XH, high(GAME_DISPLAY_RAM)
+	ldi XL, low(GAME_DISPLAY_RAM)
+
+	ldi YH, high(GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE)
+	ldi YL, low(GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE)
+
+	ldi ZH, high(DISPLAY_RAM)
+	ldi ZL, low(DISPLAY_RAM)
+
+	; LOOP
+	ldi TEMP, DISPLAY_NO_CHARACTERS_PER_LINE
+	ldi TEMP2, 0 ; line number 0 = 1st line, 1 = 2nd line
+
+	GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_LOOP:
+	cpi TEMP, 0
+	breq GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_LOOP_END
+
+	ld r24, X+
+	ld r25, Y+
+	rcall GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER
+	st Z+, r25
+
+	dec TEMP
+	rjmp GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_LOOP
+	GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_LOOP_END:
+
+
+	cpi TEMP2, 1
+	breq GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_RETURN
+
+	inc TEMP2
+	ldi TEMP, DISPLAY_NO_CHARACTERS_PER_LINE
+
+	ldi XH, high(GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE * 2)
+	ldi XL, low(GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE * 2)
+
+	ldi YH, high(GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE * 3)
+	ldi YL, low(GAME_DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE * 3)
+
+	ldi ZH, high(DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE)
+	ldi ZL, low(DISPLAY_RAM + DISPLAY_NO_CHARACTERS_PER_LINE)
+
+	rjmp GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_LOOP
+
+	GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_RETURN:
+
+	ret
+	
+
+; TODO - delete me
+GAME_DISPLAY_RAM_DEBUG:
+	ldi r24, SPRITE_BODY
+	sts GAME_DISPLAY_RAM, r24
+
+	ldi r24, SPRITE_BODY
+	sts GAME_DISPLAY_RAM + 1, r24
+
+	ldi r24, SPRITE_HEAD
+	sts GAME_DISPLAY_RAM + 2, r24
+
+	ldi r24, SPRITE_BODY
+	sts GAME_DISPLAY_RAM + 16, r24
+
+	ldi r24, SPRITE_BODY
+	sts GAME_DISPLAY_RAM + 32, r24
+
+	ldi r24, SPRITE_BODY
+	sts GAME_DISPLAY_RAM + 48, r24
+
+	ret
+
+
+; 1 Second delay
+DELAY_1_SEC:
+	ldi r24, 250
+	rcall DELAY_Nms
+	
+	ldi r24, 250
+	rcall DELAY_Nms
+	
+	ldi r24, 250
+	rcall DELAY_Nms
+	
+	ldi r24, 250
+	rcall DELAY_Nms
+	
+	ret
+
+; Display sync status LED, Pin A1
+DISPLAY_SYNC_LED_INIT:
+	ldi TEMP, 0x01
+	out DDRA, TEMP
+	ret
+
+DISPLAY_SYNC_LED_BLINK:
+	ldi TEMP, 0x01
+	out PORTA, TEMP
+
+	ldi r24, 200
+	rcall DELAY_Nms
+
+	ldi TEMP, 0x00
+	out PORTA, TEMP
+
+	ldi r24, 200
+	rcall DELAY_Nms
+
+	ret
+
+GAME_DISPLAY_RAM_RESET:
+	ldi TEMP, SPRITE_EMPTY
+	ldi XH, high(GAME_DISPLAY_RAM)
+	ldi XL, low(GAME_DISPLAY_RAM)
+
+	ldi TEMP2, GAME_DISPLAY_RAM_SIZE
+
+	GAME_DISPLAY_RAM_RESET_LOOP:
+	cpi TEMP2, 0
+	breq GAME_DISPLAY_RAM_RESET_LOOP_END
+	st X+, TEMP
+	;inc XL
+	dec TEMP2
+	rjmp GAME_DISPLAY_RAM_RESET_LOOP
+	GAME_DISPLAY_RAM_RESET_LOOP_END:
+
+	ret
 
 
 ; Resets the area of memory where the DISPLAY_RAM is with ' ' characters.
@@ -46,8 +374,8 @@ DISPLAY_RAM_RESET:
 	DISPLAY_RAM_RESET_LOOP:
 	cpi TEMP2, 0
 	breq DISPLAY_RAM_RESET_LOOP_END
-	st X, TEMP
-	inc XL
+	st X+, TEMP
+	;inc XL
 	dec TEMP2
 	rjmp DISPLAY_RAM_RESET_LOOP
 	DISPLAY_RAM_RESET_LOOP_END:
@@ -84,9 +412,8 @@ DISPLAY_SYNC:
 	DISPLAY_SYNC_LOOP_1:
 	cpi TEMP, 0
 	breq DISPLAY_SYNC_LOOP_1_END
-	ld r24, X
+	ld r24, X+
 	rcall DISPLAY_SEND_CHARACTER
-	inc XL
 	dec TEMP
 	rjmp DISPLAY_SYNC_LOOP_1
 
@@ -101,9 +428,8 @@ DISPLAY_SYNC:
 	DISPLAY_SYNC_LOOP_2:
 	cpi TEMP, 0
 	breq DISPLAY_SYNC_LOOP_2_END
-	ld r24, X
+	ld r24, X+
 	rcall DISPLAY_SEND_CHARACTER
-	inc XL
 	dec TEMP
 	rjmp DISPLAY_SYNC_LOOP_2
 
@@ -134,46 +460,46 @@ SPRITE_INIT:
 	HEAD_BOTTOM_PIXEL_ROW:
 	.db 0, 0, 0, 0, 0x0E, 0x11, 0x11, 0x0E
 
-	DROP_TOP_PIXEL_ROW:
-	.db 0x0E, 0x15, 0x15, 0x0E, 0, 0, 0, 0
+	HEAD_TOP_BODY_BOTTOM_PIXEL_ROW:
+	.db 0x0E, 0x11, 0x11, 0x0E, 0x0E, 0x1F, 0x1F, 0x0E
 
-	DROP_BOTTOM_PIXEL_ROW:
-	.db 0, 0, 0, 0, 0x0E, 0x15, 0x15, 0x0E
+	HEAD_BOTTOM_BODY_TOP_PIXEL_ROW:
+	.db 0x0E, 0x1F, 0x1F, 0x0E, 0x0E, 0x11, 0x11, 0x0E
 
 	; Create the sprites in the display's RAM
 	ldi ZH, high(BODY_TOP_PIXEL_ROW * 2)
 	ldi ZL, low(BODY_TOP_PIXEL_ROW * 2)
-	ldi r24, 0
+	ldi r24, DISPLAY_CHAR_BODY_TOP
 	rcall SPRITE_CREATE
 
 	ldi ZH, high(BODY_BOTTOM_PIXEL_ROW * 2)
 	ldi ZL, low(BODY_BOTTOM_PIXEL_ROW * 2)
-	ldi r24, 1
+	ldi r24, DISPLAY_CHAR_BODY_BOTTOM
 	rcall SPRITE_CREATE
 	
 	ldi ZH, high(BODY_BOTH_PIXEL_ROW * 2)
 	ldi ZL, low(BODY_BOTH_PIXEL_ROW * 2)
-	ldi r24, 2
+	ldi r24, DISPLAY_CHAR_BODY_BOTH
 	rcall SPRITE_CREATE
 	
 	ldi ZH, high(HEAD_TOP_PIXEL_ROW * 2)
 	ldi ZL, low(HEAD_TOP_PIXEL_ROW * 2)
-	ldi r24, 3
+	ldi r24, DISPLAY_CHAR_HEAD_TOP
 	rcall SPRITE_CREATE
 
 	ldi ZH, high(HEAD_BOTTOM_PIXEL_ROW * 2)
 	ldi ZL, low(HEAD_BOTTOM_PIXEL_ROW * 2)
-	ldi r24, 4
+	ldi r24, DISPLAY_CHAR_HEAD_BOTTOM
 	rcall SPRITE_CREATE
 	
-	ldi ZH, high(DROP_TOP_PIXEL_ROW * 2)
-	ldi ZL, low(DROP_TOP_PIXEL_ROW * 2)
-	ldi r24, 5
+	ldi ZH, high(HEAD_TOP_BODY_BOTTOM_PIXEL_ROW * 2)
+	ldi ZL, low(HEAD_TOP_BODY_BOTTOM_PIXEL_ROW * 2)
+	ldi r24, DISPLAY_CHAR_HEAD_TOP_BODY_BOTTOM
 	rcall SPRITE_CREATE
 
-	ldi ZH, high(DROP_BOTTOM_PIXEL_ROW * 2)
-	ldi ZL, low(DROP_BOTTOM_PIXEL_ROW * 2)
-	ldi r24, 6
+	ldi ZH, high(HEAD_BOTTOM_BODY_TOP_PIXEL_ROW * 2)
+	ldi ZL, low(HEAD_BOTTOM_BODY_TOP_PIXEL_ROW * 2)
+	ldi r24, DISPLAY_CHAR_BODY_TOP_HEAD_BOTTOM
 	rcall SPRITE_CREATE
 
 	; Go to beginning of display (exit CGRAM mode)
@@ -188,32 +514,28 @@ SPRITE_DEBUG_DISPLAY:
 	ldi r24, '|'
 	rcall DISPLAY_SEND_CHARACTER
 
-	; Display custom char
-	ldi r24, 0x00
+	ldi r24, DISPLAY_CHAR_BODY_TOP
 	rcall DISPLAY_SEND_CHARACTER
 
-	; Display custom char
-	ldi r24, 0x01
+	ldi r24, DISPLAY_CHAR_BODY_BOTTOM
 	rcall DISPLAY_SEND_CHARACTER
 	
-	; Display custom char
-	ldi r24, 0x02
+	ldi r24, DISPLAY_CHAR_BODY_BOTH
 	rcall DISPLAY_SEND_CHARACTER
 	
-	; Display custom char
-	ldi r24, 0x03
+	ldi r24, DISPLAY_CHAR_HEAD_TOP
 	rcall DISPLAY_SEND_CHARACTER
 	
-	; Display custom char
-	ldi r24, 0x04
+	ldi r24, DISPLAY_CHAR_HEAD_BOTTOM
 	rcall DISPLAY_SEND_CHARACTER
 	
-	; Display custom char
-	ldi r24, 0x05
+	ldi r24, DISPLAY_CHAR_HEAD_TOP_BODY_BOTTOM
 	rcall DISPLAY_SEND_CHARACTER
 	
-	; Display custom char
-	ldi r24, 0x06
+	ldi r24, DISPLAY_CHAR_BODY_TOP_HEAD_BOTTOM
+	rcall DISPLAY_SEND_CHARACTER
+
+	ldi r24, DISPLAY_CHAR_EMPTY
 	rcall DISPLAY_SEND_CHARACTER
 	
 	; Seperator
@@ -233,35 +555,28 @@ SPRITE_CREATE:
 	ori r24, 0b0100_0000 ; CGRAM mode + CGRAM Address 
 	rcall DISPLAY_SEND_COMMAND
 
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL	
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL
-	lpm r24, Z
+	lpm r24, Z+
 	rcall DISPLAY_SEND_CHARACTER
 
-	inc ZL
-	lpm r24, Z
+	lpm r24, Z+ ; strickly speaking + not necessary here
 	rcall DISPLAY_SEND_CHARACTER
 
 	ret
@@ -385,8 +700,8 @@ DISPLAY_INIT:
 	ldi r24, 0b0000_0110
 	rcall DISPLAY_SEND_COMMAND
 
-	; Display on/off control instruction - Turn display, cursor and blinking to on 
-	ldi r24, 0b0000_1101
+	; Display on/off control instruction - Turn display on, cursor & blinking off
+	ldi r24, 0b0000_1100
 	rcall DISPLAY_SEND_COMMAND
 
 	pop TEMP
