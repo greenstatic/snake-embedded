@@ -50,7 +50,8 @@ SNAKE_POS_SIZE:		.byte 1
 SNAKE_POS:			.byte (SNAKE_POS_MAX_LENGTH + 1) * 2; we store X,Y for one position
 													  ; +1 to add a buffer when we add the new
 													  ; head and remove the last element
-REG_2_MEM:			.byte 8
+TEMP_8_BYTE:		.byte 8
+
 .CSEG
 START:
 	; Initilize the stack pointer
@@ -90,6 +91,147 @@ MAIN:
 
 	rjmp MAIN_GAME_LOOP
 
+
+; Take a 8-bit unsigned number and convert it into ASCII decimal, then
+; send it to the display. Make sure the cursor is set where you wish the
+; first digit to appear and that there is enough room to print the entire number
+; (3 characters since 8-bits can be max 2^8 = 255 DEC, three digits).
+;
+; r24: Input register value to display as a deciaml number on the display
+DISPLAY_SEND_DECIMAL:
+	push TEMP
+
+	ldi XH, high(TEMP_8_BYTE)
+	ldi XL, low(TEMP_8_BYTE)
+	rcall BIN_2_ASCII_DEC
+
+	ldi XH, high(TEMP_8_BYTE)
+	ldi XL, low(TEMP_8_BYTE)
+	
+	ldi TEMP, 8
+	DISPLAY_SEND_DECIMAL__LOOP:
+	cpi TEMP, 0
+	breq DISPLAY_SEND_DECIMAL__LOOP_END
+
+	ld r24, X+
+	cpi r24, 0
+	breq DISPLAY_SEND_DECIMAL__LOOP_SKIP
+
+	rcall DISPLAY_SEND_CHARACTER
+
+	DISPLAY_SEND_DECIMAL__LOOP_SKIP:
+	dec TEMP
+	rjmp DISPLAY_SEND_DECIMAL__LOOP
+
+	DISPLAY_SEND_DECIMAL__LOOP_END:
+
+	pop TEMP
+	ret
+
+; Convert a 8-bit register value into an ASCII decimal number stored in memory.
+; r24: Input register unsigned number
+; X: Base pointer to memory space where we will save the decimal number (1 byte = 1 DEC digit)
+BIN_2_ASCII_DEC:
+	push TEMP
+	push TEMP2
+	
+	; Add 8 to base pointer since we will decrement it in the loop below
+	; XH | XL  +  TEMP2 | TEMP
+	ldi TEMP, 8
+	ldi TEMP2, 0
+	add XL, TEMP
+	adc XH, TEMP2
+
+	mov TEMP2, r24
+
+	BIN_2_ASCII_DEC__LOOP:
+	cpi TEMP, 0
+	breq BIN_2_ASCII_DEC__LOOP_END
+
+	cpi TEMP2, 0
+	brne BIN_2_ASCII_DEC__LOOP_1
+
+	ldi r24, 0
+	st -X, r24
+	rjmp BIN_2_ASCII_DEC__LOOP_2
+
+
+	BIN_2_ASCII_DEC__LOOP_1:
+	mov r24, TEMP2
+	ldi r25, 10
+	rcall MOD
+
+	ldi r25, 0x30 ; ASCII digit section
+	add r24, r25
+
+	st -X, r24
+
+	mov r24, TEMP2
+	ldi r25, 10
+	rcall DIV
+
+	mov TEMP2, r24
+
+	BIN_2_ASCII_DEC__LOOP_2:
+
+	dec TEMP
+	rjmp BIN_2_ASCII_DEC__LOOP
+	BIN_2_ASCII_DEC__LOOP_END:
+
+
+	pop TEMP2
+	pop TEMP
+	ret
+
+
+; Take the modulo (remainder) of two 8-bit unsigned numbers
+; r24: Input dividend register with unsigned number
+; r25: Input divisor register with unsigned number
+;
+; r24: Return register with remainder
+;
+; If divisor is 0, undefined behaviour.
+MOD:
+	rcall DIV
+	mov r24, r25
+	ret
+
+
+; Divide two 8-bit unsigned numbers
+; r24: Input dividend register with unsigned number
+; r25: Input divisor register with unsigned number
+;
+; r24: Return register with quotient
+; r25: Return register with remainder
+;
+; If divisor is 0, undefined behaviour.
+DIV:
+	push TEMP
+
+	ldi TEMP, 0 ; quotient
+
+	; Cannot divide by 0, if we do, simply end the subroutine
+	cpi r25, 0
+	breq DIV__LOOP_END
+
+	DIV__LOOP:
+	cp r24, r25
+	brlo DIV__LOOP_END ; r24 < r25
+
+	sub r24, r25
+	inc TEMP
+
+	rjmp DIV__LOOP
+
+	DIV__LOOP_END:
+	mov r25, r24 ; remainder
+	mov r24, TEMP
+	
+	pop TEMP
+	ret
+
+
+
 ; Sends to the display a 8-bit register value as a 8 character binary number.
 ; Please make sure that the cursor is at a place where the full 8 character
 ; binary number will be visable.
@@ -97,13 +239,13 @@ MAIN:
 DISPLAY_SEND_REGISTER:
 	push TEMP
 
-	ldi XH, high(REG_2_MEM)
-	ldi XL, low(REG_2_MEM)
+	ldi XH, high(TEMP_8_BYTE)
+	ldi XL, low(TEMP_8_BYTE)
 
 	rcall REGISTER_2_MEMORY_BIN
 
-	ldi XH, high(REG_2_MEM)
-	ldi XL, low(REG_2_MEM)
+	ldi XH, high(TEMP_8_BYTE)
+	ldi XL, low(TEMP_8_BYTE)
 
 	ldi TEMP, 8
 	DISPLAY_SEND_REGISTER__LOOP:
