@@ -33,6 +33,12 @@
 
 #define JOYSTICK_THRESHOLD_DELTA 30 ; how sensative the controls are
 
+; Parameters for Lehmer random number generator
+#define RNG_SEED	1
+#define RNG_M		31
+#define RNG_A		3
+
+
 ; We treat these register values as 'variables' with local scope, therefore
 ; we assume when we call a subroutine they will be pushed/popped by the subroutine
 .def TEMP = R18
@@ -50,7 +56,9 @@ SNAKE_POS_SIZE:		.byte 1
 SNAKE_POS:			.byte (SNAKE_POS_MAX_LENGTH + 1) * 2; we store X,Y for one position
 													  ; +1 to add a buffer when we add the new
 													  ; head and remove the last element
-TEMP_8_BYTE:		.byte 8
+TEMP_8_BYTE:	.byte 8
+RNG_NUMBER:		.byte 1
+
 
 .CSEG
 START:
@@ -58,7 +66,7 @@ START:
 	ldi TEMP, LOW(RAMEND)
 	out SPL, TEMP
 	ldi TEMP, HIGH(RAMEND)
-	out SPH, TEMP
+	out SPH, TEMP	
 
 MAIN:
 	rcall DISPLAY_INIT
@@ -66,6 +74,8 @@ MAIN:
 	rcall GAME_DISPLAY_RAM_RESET
 	rcall DISPLAY_RAM_RESET
 	rcall DISPLAY_SYNC_LED_INIT
+	
+	rcall RNG_INIT
 
 	;rcall SPRITE_DEBUG_DISPLAY
 
@@ -91,6 +101,40 @@ MAIN:
 
 	rjmp MAIN_GAME_LOOP
 
+; Initialize the pseudo random number generator.
+RNG_INIT:
+	ldi r24, RNG_SEED
+	sts RNG_NUMBER, r24
+	ret
+
+; Returns the next random number from the pseudo random number generator.
+; We use a very primitive Lehmer random number generator with a period of
+; 30. We subtract from the original answer 1 in order to get numbers [0,29]
+; r25: Return register for the random number
+RNG_NEXT:
+	push TEMP
+	push TEMP2
+
+	lds TEMP, RNG_NUMBER
+	mov TEMP2, TEMP
+	
+	ldi r24, RNG_A
+	mul r24, TEMP2
+
+	; 3 * 30 = 90 can be the max product, the lower byte is all we need
+	mov r24, r0 
+	ldi r25, RNG_M
+	rcall MOD
+
+	sts RNG_NUMBER, r24
+
+	; Return the "previous" value and subtract one
+	mov r25, TEMP
+	subi r25, 1
+
+	pop TEMP2
+	pop TEMP
+	ret
 
 ; Take a 8-bit unsigned number and convert it into ASCII decimal, then
 ; send it to the display. Make sure the cursor is set where you wish the
@@ -142,6 +186,17 @@ BIN_2_ASCII_DEC:
 	add XL, TEMP
 	adc XH, TEMP2
 
+	; Check if input is 0
+	cpi r24, 0
+	brne BIN_2_ASCII_DEC__LOOP_INIT
+
+	ldi TEMP, 0x30
+	add r24, TEMP
+	st -X, r24
+	rjmp BIN_2_ASCII_DEC__LOOP_END
+
+	; Input is not equal to 0
+	BIN_2_ASCII_DEC__LOOP_INIT:
 	mov TEMP2, r24
 
 	BIN_2_ASCII_DEC__LOOP:
