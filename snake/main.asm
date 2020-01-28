@@ -29,8 +29,12 @@
 #define DIRECTION_DOWN	1
 #define DIRECTION_LEFT	2
 #define DIRECTION_UP	3
+#define DIRECTION_PREVIOUS 4
 
+#define JOYSTICK_THRESHOLD_DELTA 30 ; how sensative the controls are
 
+; We treat these register values as 'variables' with local scope, therefore
+; we assume when we call a subroutine they will be pushed/popped by the subroutine
 .def TEMP = R18
 .def TEMP2 = R19
 .def TEMP3 = R20
@@ -40,11 +44,13 @@ GAME_DISPLAY_RAM:	.byte GAME_DISPLAY_RAM_SIZE
 DISPLAY_RAM:		.byte DISPLAY_RAM_SIZE
 POINTS:				.byte 1
 DIRECTION:			.byte 1
+JOYSTICK_BUFFER:	.byte 1
+DROP_COORDINATES:	.byte 2
 SNAKE_POS_SIZE:		.byte 1
 SNAKE_POS:			.byte (SNAKE_POS_MAX_LENGTH + 1) * 2; we store X,Y for one position
 													  ; +1 to add a buffer when we add the new
 													  ; head and remove the last element
-
+REG_2_MEM:			.byte 8
 .CSEG
 START:
 	; Initilize the stack pointer
@@ -60,31 +66,272 @@ MAIN:
 	rcall DISPLAY_RAM_RESET
 	rcall DISPLAY_SYNC_LED_INIT
 
-	;rcall GAME_DISPLAY_RAM_DEBUG
 	;rcall SPRITE_DEBUG_DISPLAY
-	;rcall DISPLAY_SYNC_DEBUG
 
 	rcall GAME_INIT
+	rcall JOYSTICK_INIT
 	
-	;WAIT: nop
-	;rjmp WAIT
-
 	; Main game loop
 	MAIN_GAME_LOOP:
+	rcall JOYSTICK_READ
+	rcall MOVE_DIRECTION_VALID
+
 	rcall GAME_TICK
 	rcall GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM
 	rcall GAME_DISPLAY_RAM_MAP_DISPLAY_RAM
 	rcall DISPLAY_SYNC
 	rcall DISPLAY_SYNC_LED_BLINK
 	
-	; 400 ms delay
-	ldi r24, 250
+	; 300 ms delay
+	ldi r24, 200
 	rcall DELAY_Nms
-	ldi r24, 150
+	ldi r24, 100
 	rcall DELAY_Nms
-	
 
 	rjmp MAIN_GAME_LOOP
+
+; Sends to the display a 8-bit register value as a 8 character binary number.
+; Please make sure that the cursor is at a place where the full 8 character
+; binary number will be visable.
+; r24: Input register value to display
+DISPLAY_SEND_REGISTER:
+	push TEMP
+
+	ldi XH, high(REG_2_MEM)
+	ldi XL, low(REG_2_MEM)
+
+	rcall REGISTER_2_MEMORY_BIN
+
+	ldi XH, high(REG_2_MEM)
+	ldi XL, low(REG_2_MEM)
+
+	ldi TEMP, 8
+	DISPLAY_SEND_REGISTER__LOOP:
+	cpi TEMP, 0
+	breq DISPLAY_SEND_REGISTER__LOOP_END
+
+	ld r24, X+
+	ldi r25, 0x30 ; ASCII 0x30 = 0, 0x31 = 1
+	add r24, r25
+	rcall DISPLAY_SEND_CHARACTER
+
+	dec TEMP
+	rjmp DISPLAY_SEND_REGISTER__LOOP
+
+	DISPLAY_SEND_REGISTER__LOOP_END:
+
+	pop TEMP
+	ret
+
+
+; Copies the register value into an array in the memory
+; r24: Register value
+; X: base pointer to a 8 byte memory location where we will copy each bit
+;    of the register value
+;
+; e.g. r24 = 1101_1001
+;      memory = | 1 | 1 | 0 | 1 | 1 | 0 | 0 | 1 |
+REGISTER_2_MEMORY_BIN:
+	push TEMP
+	push TEMP2
+
+	; We will start from the "end" LSB to the "start" MSB
+	; Add 8 to the base pointer, then we will decrement it
+	; in each iteration of our loop below. Note: we use 8
+	; because we use pre-decrement not post.
+	; XH | XL  +  TEMP2 | TEMP
+	ldi TEMP, 8
+	ldi TEMP2, 0
+	add XL, TEMP
+	adc XH, TEMP2
+
+	ldi TEMP, 8
+	REGISTER_2_MEMORY_BIN__LOOP:
+	cpi TEMP, 0
+	breq REGISTER_2_MEMORY_BIN__LOOP_END
+	
+	mov TEMP2, r24
+	andi TEMP2, 0x01
+	st -X, TEMP2
+	lsr r24
+
+	dec TEMP
+	rjmp REGISTER_2_MEMORY_BIN__LOOP
+	REGISTER_2_MEMORY_BIN__LOOP_END:
+
+	pop TEMP2
+	pop TEMP
+	ret
+
+
+; Checks the players desired direction from the JOYSTICK_BUFFER
+; and verifies it is a valid movement for the current state, if
+; it is update the DIRECTION memory value.
+MOVE_DIRECTION_VALID:
+	push TEMP
+
+	; TODO - check if valid move
+
+	; Update the direction from the joystick buffer if buffer is not set
+	; to DIRECTION_PREVIOUS
+	lds TEMP, JOYSTICK_BUFFER
+	cpi TEMP, DIRECTION_PREVIOUS
+	breq MOVE_DIRECTION_VALID__END
+	sts DIRECTION, TEMP
+
+	MOVE_DIRECTION_VALID__END:
+
+	pop TEMP
+	ret	
+
+
+; Initialize the Joystick by turning on the ADC.
+; Joystick should be connected to PF0 (x) & PF1 (y).
+JOYSTICK_INIT:
+	push TEMP
+
+	; Setup the port
+	ldi TEMP, 0x00
+	sts DDRF, TEMP
+	
+	; Disable pull-up resistors
+	ldi TEMP, 0x00
+	sts PORTF, TEMP 
+
+	; Enable ADC
+	ldi TEMP, 0b1000_0111
+	out ADCSRA, TEMP
+
+	; Enable ADC Left Adjust Result
+	ldi TEMP, 0b0010_0000
+	out ADMUX, TEMP
+
+	pop TEMP
+	ret
+
+; Read the values of the joystick and write the snake direction
+; in the JOYSTICK_BUFFER.
+JOYSTICK_READ:
+	push TEMP
+	push TEMP2
+	push TEMP3
+
+	rcall JOYSTICK_ADC_READ
+	mov TEMP2, r24 ; X-axis
+	mov TEMP3, r25 ; Y-axis
+
+	; X-axis
+	; 0 <= TEMP2 <= JOYSTICK_THRESHOLD_DELTA -> DIRECTION_LEFT
+	; 255 - JOYSTICK_THRESHOLD_DELTA <= TEMP2 <= 255 -> DIRECTION_RIGHT
+	JOYSTICK_READ__X_LEFT:
+	cpi TEMP2, JOYSTICK_THRESHOLD_DELTA + 1
+	brsh JOYSTICK_READ__X_RIGHT
+	
+	ldi TEMP, DIRECTION_LEFT
+	sts JOYSTICK_BUFFER, TEMP
+	rjmp JOYSTICK_READ__END
+
+	JOYSTICK_READ__X_RIGHT:
+	cpi TEMP2, 255 - JOYSTICK_THRESHOLD_DELTA
+	brlo JOYSTICK_READ__Y_UP
+
+	ldi TEMP, DIRECTION_RIGHT
+	sts JOYSTICK_BUFFER, TEMP
+	rjmp JOYSTICK_READ__END
+
+	; Y-axis
+	; 0 <= TEMP3 <= JOYSTICK_THRESHOLD_DELTA -> DIRECTION_UP
+	; 255 - JOYSTICK_THRESHOLD_DELTA <= TEMP3 <= 255 -> DIRECTION_DOWN
+	JOYSTICK_READ__Y_UP:
+	cpi TEMP3, JOYSTICK_THRESHOLD_DELTA + 1
+	brsh JOYSTICK_READ__Y_DOWN
+	
+	ldi TEMP, DIRECTION_UP
+	sts JOYSTICK_BUFFER, TEMP
+	rjmp JOYSTICK_READ__END
+
+	JOYSTICK_READ__Y_DOWN:
+	cpi TEMP3, 255 - JOYSTICK_THRESHOLD_DELTA
+	brlo JOYSTICK_READ__KEEP_DIRECTION
+
+	ldi TEMP, DIRECTION_DOWN
+	sts JOYSTICK_BUFFER, TEMP
+	rjmp JOYSTICK_READ__END
+
+
+	; Keep the previous direction
+	JOYSTICK_READ__KEEP_DIRECTION:
+	ldi TEMP, DIRECTION_PREVIOUS
+	sts JOYSTICK_BUFFER, TEMP
+
+	JOYSTICK_READ__END:
+
+	pop TEMP3
+	pop TEMP2
+	pop TEMP
+	ret
+
+; Reads the ADC values of the joystick with 8-bit precision.
+; r24: Return value of joystick X-axis (0-255)
+; r25: Return value of joystick Y-axis (0-255)
+JOYSTICK_ADC_READ:
+	push TEMP
+
+	; Read value for X-axis
+	
+	; Select ADC00 (X-axis)
+	; Enable ADLAR (Left adjusted), meaning we cut off the last
+	; two bits of the ADCH | ADCL 10-bit value (which is the equivalent
+	; of dividing by 2^2=4).
+	in TEMP, ADMUX
+	andi TEMP, 0xF8 ; remove the first 3 LSB (MUX) selector
+	ori TEMP, 0x00
+	out ADMUX, TEMP
+
+	; Start conversion
+	in TEMP, ADCSRA
+	sbr TEMP, 0x40
+	out ADCSRA, TEMP
+
+	; Wait until the conversion is done
+	JOYSTICK_ADC_READ__LOOP_X:
+	in TEMP, ADCSRA
+	sbrc TEMP, 6
+	rjmp JOYSTICK_ADC_READ__LOOP_X
+
+	in r24, ADCH
+
+	; Read value for Y-axis
+	
+	; Select ADC01 (Y-axis) and enable ADLAR (see above why)
+	in TEMP, ADMUX
+	andi TEMP, 0xF8 ; remove the first 3 LSB (MUX) selector
+	ori TEMP, 0x01
+	out ADMUX, TEMP
+
+	; Start conversion
+	in TEMP, ADCSRA
+	sbr TEMP, 0x40
+	out ADCSRA, TEMP
+
+	; Wait until the conversion is done
+	JOYSTICK_ADC_READ__LOOP_Y:
+	in TEMP, ADCSRA
+	sbrc TEMP, 6
+	rjmp JOYSTICK_ADC_READ__LOOP_Y
+
+	in r25, ADCH
+
+	pop TEMP
+	ret
+
+
+; Clears the display
+DISPLAY_CLEAR:
+	ldi r24, 0x1
+	rcall DISPLAY_SEND_COMMAND
+	ret
+
 
 ; Initialize the game
 GAME_INIT:
@@ -108,37 +355,18 @@ GAME_INIT:
 	ldi TEMP, DIRECTION_RIGHT
 	sts DIRECTION, TEMP
 
-	; TODO - delete
-	/*;ldi TEMP, SPRITE_HEAD
-	;sts GAME_DISPLAY_LINE_2 + 1, TEMP
-	ldi r23, SPRITE_HEAD
-	ldi r24, SNAKE_POS_INIT_X
-	ldi r25, SNAKE_POS_INIT_Y
-	rcall GAME_DISPLAY_WRITE_XY*/
+	; Initialize the joystick buffer
+	ldi TEMP, DIRECTION_RIGHT
+	sts JOYSTICK_BUFFER, TEMP
 
 	ret
 
-;
+; Perform one game tick
 GAME_TICK:
 	push TEMP
+	push TEMP2
 
-	; Get the head of the snake position stack
-	ldi XH, high(SNAKE_POS)
-	ldi XL, low(SNAKE_POS)
-
-	lds TEMP, SNAKE_POS_SIZE
-	subi TEMP, 2 ; SIZE - 2 (offset of the head of the stack)
-	
-	ldi XH, high(SNAKE_POS)
-	ldi XL, low(SNAKE_POS)
-
-	; XH | XL  +  TEMP2 | TEMP
-	ldi TEMP2, 0
-	add XL, TEMP
-	adc XH, TEMP2
-
-	ld r24, X+ ; X coordinate
-	ld r25, X+ ; Y coordinate
+	rcall SNAKE_HEAD_POS
 
 	lds r23, DIRECTION
 	rcall SNAKE_POS_TRANSFORM
@@ -146,21 +374,20 @@ GAME_TICK:
 	; TODO - check if snake hit obstacle
 
 
-	; Push to snake position stack
+	; Push new head postion to snake position stack and increment the stack size counter
 	st X+, r24
 	st X+, r25
-	lds TEMP, SNAKE_POS_SIZE
+	lds TEMP, SNAKE_POS_SIZE 
 	inc TEMP
 	inc TEMP
 	sts SNAKE_POS_SIZE, TEMP
 
-	; TODO - remove the first element in stack
+	; Remove the first element (the lowest element) in the snake position stack
 	ldi XH, high(SNAKE_POS)
 	ldi XL, low(SNAKE_POS)
 	
 	ldi YH, high(SNAKE_POS + 2) ; Y points to the next stack element (2 because we have x,y as 1 'element')
 	ldi YL, low(SNAKE_POS + 2)
-	;lds TEMP, SNAKE_POS_SIZE
 	
 	GAME_TICK__LOOP:
 	cpi TEMP, 0
@@ -184,8 +411,41 @@ GAME_TICK:
 	dec TEMP
 	sts SNAKE_POS_SIZE, TEMP
 
+	; End of removal of first snake position stack element
+
+	pop TEMP2
 	pop TEMP
 	ret
+
+; Gets the snakes head position in r24,r25 (x,y)
+; r24: X coordinate
+; r25: Y coordinate
+SNAKE_HEAD_POS:
+	push TEMP
+	push TEMP2
+
+	; Get the head of the snake position stack
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+
+	lds TEMP, SNAKE_POS_SIZE
+	subi TEMP, 2 ; SIZE - 2 (offset of the head of the stack)
+	
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+
+	; XH | XL  +  TEMP2 | TEMP
+	ldi TEMP2, 0
+	add XL, TEMP
+	adc XH, TEMP2
+
+	ld r24, X+ ; X coordinate
+	ld r25, X+ ; Y coordinate
+
+	pop TEMP2
+	pop TEMP
+	ret
+
 
 ; Transforms the position of a block of snake
 ; in relation to the direction
@@ -511,29 +771,6 @@ GAME_DISPLAY_RAM_MAP_DISPLAY_RAM:
 	GAME_DISPLAY_RAM_MAP_DISPLAY_RAM_RETURN:
 
 	ret
-	
-
-; TODO - delete me
-GAME_DISPLAY_RAM_DEBUG:
-	ldi r24, SPRITE_BODY
-	sts GAME_DISPLAY_RAM, r24
-
-	ldi r24, SPRITE_BODY
-	sts GAME_DISPLAY_RAM + 1, r24
-
-	ldi r24, SPRITE_HEAD
-	sts GAME_DISPLAY_RAM + 2, r24
-
-	ldi r24, SPRITE_BODY
-	sts GAME_DISPLAY_RAM + 16, r24
-
-	ldi r24, SPRITE_BODY
-	sts GAME_DISPLAY_RAM + 32, r24
-
-	ldi r24, SPRITE_BODY
-	sts GAME_DISPLAY_RAM + 48, r24
-
-	ret
 
 ; Display sync status LED, Pin A1
 DISPLAY_SYNC_LED_INIT:
@@ -591,22 +828,6 @@ DISPLAY_RAM_RESET:
 	dec TEMP2
 	rjmp DISPLAY_RAM_RESET_LOOP
 	DISPLAY_RAM_RESET_LOOP_END:
-
-	ret
-
-; TODO - delete me
-DISPLAY_SYNC_DEBUG:
-	ldi r24, '1'
-	sts DISPLAY_RAM, r24
-
-	ldi r24, '2'
-	sts DISPLAY_RAM + 1, r24
-
-	ldi r24, '3'
-	sts DISPLAY_RAM + 2, r24
-
-	ldi r24, '4'
-	sts DISPLAY_RAM + 16, r24
 
 	ret
 
