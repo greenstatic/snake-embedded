@@ -13,4 +13,4 @@ Display is connected to: ET-CLCD \
 LED (blinks when display refreshes): GPIO A0 \
 Joystick X-axis: GPIO F0 \
 Joystick Y-axis: GPIO F1 \
-Joystick switch: GPIO E0 \
+Joystick switch: GPIO E0 
