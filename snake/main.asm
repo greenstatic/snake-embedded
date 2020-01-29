@@ -118,8 +118,8 @@ MAIN:
 
 ; Call when the snake has collided with a drop. Increases the points and spawns
 ; a new drop.
-; r24: Snake head X-axis
-; r25: Snake head Y-axis
+; r24: Input Snake head X coordinate
+; r25: Input Snake head Y coordinate
 SNAKE_COLLIDED_WITH_DROP:
 	push TEMP
 	push TEMP2
@@ -819,24 +819,25 @@ GAME_TICK:
 	push TEMP2
 
 	rcall SNAKE_HEAD_POS
-	push XH
+	mov TEMP, r24 ; old x-coordinate
+	mov TEMP2, r25 ; old y-coordinate
+
+	push XH ; Pointer to next stack element (empty)
 	push XL
 
 	lds r23, DIRECTION
 	rcall SNAKE_POS_TRANSFORM
-	push r24
-	push r25
+	mov TEMP, r24 ; new x-coordinate
+	mov TEMP2, r25 ; new y-coordinate
 
 	; TODO - check if snake hit obstacle
 	rcall SNAKE_COLLISION_DETECTION
 	cpi r25, COLLISION_DROP
 	brne GAME_TICK__COLLISION_DONE
 	
-	pop r25
-	pop r24
+	; Increment the X register by 2
 	pop XL
 	pop XH
-
 	; XH | XL  +  r24 | r25
 	ldi r24, 0
 	ldi r25, 2
@@ -845,8 +846,9 @@ GAME_TICK:
 
 	push XH
 	push XL
-	push r24
-	push r25
+
+	mov r24, TEMP ; restore the new x/y coordinates
+	mov r25, TEMP2
 	rcall SNAKE_COLLIDED_WITH_DROP
 	rjmp GAME_TICK__COLLISION_DONE
 
@@ -857,14 +859,13 @@ GAME_TICK:
 	rjmp GAME_TICK__COLLISION_DONE
 
 	GAME_TICK__COLLISION_DONE:
-	pop r25
-	pop r24
+
 	pop XL
 	pop XH
 
 	; Push new head postion to snake position stack and increment the stack size counter
-	st X+, r24
-	st X+, r25
+	st X+, TEMP
+	st X+, TEMP2
 	lds TEMP, SNAKE_POS_SIZE 
 	inc TEMP
 	inc TEMP
@@ -906,8 +907,8 @@ GAME_TICK:
 	ret
 
 ; Gets the snakes head position in r24,r25 (x,y)
-; r24: X coordinate
-; r25: Y coordinate
+; r24: Return value X coordinate
+; r25: Return value Y coordinate
 SNAKE_HEAD_POS:
 	push TEMP
 	push TEMP2
@@ -941,7 +942,9 @@ SNAKE_HEAD_POS:
 ; r25: Y coordinate
 ; r23: direction (DIRECTION_RIGHT, DIRECTION_DOWN, etc.)
 ;
-; Return's the transofmred X,Y coordinates in r24,r25
+; Return's the transofmred X,Y coordinates
+; r24: Return value X coordinate
+; r25: Return value Y coordinate
 SNAKE_POS_TRANSFORM:
 	push TEMP
 
