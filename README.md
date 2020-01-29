@@ -18,3 +18,6 @@ On game over press the switch on the joystick to start a new game.
 * Joystick X-axis: GPIO F0
 * Joystick Y-axis: GPIO F1
 * Joystick switch: GPIO E0 
+
+## Development
+Created using [Atmel Studio 7](https://www.microchip.com/mplab/avr-support/atmel-studio-7), simply import the project and assemble away.
