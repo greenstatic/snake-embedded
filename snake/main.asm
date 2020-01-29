@@ -437,27 +437,6 @@ SNAKE_POS_FREE_COORDINATES:
 	pop TEMP
 	ret
 
-; Clears a block of memory.
-; r24: Value to replace the block of memory with
-; r25: Length of memory to clear
-; X: Base pointer to the block of memory
-ARRAY_CLEAR:
-	push TEMP
-
-	ARRAY_CLEAR__LOOP:
-	cpi r25, 0
-	breq ARRAY_CLEAR__END
-
-	ld r24, X+
-
-	dec r25
-	rjmp ARRAY_CLEAR__LOOP
-
-	ARRAY_CLEAR__END:
-	pop TEMP
-	ret
-
-
 ; Initialize the pseudo random number generator.
 RNG_INIT:
 	ldi r24, RNG_SEED
@@ -643,81 +622,6 @@ DIV:
 	ret
 
 
-
-; Sends to the display a 8-bit register value as a 8 character binary number.
-; Please make sure that the cursor is at a place where the full 8 character
-; binary number will be visable.
-; r24: Input register value to display
-DISPLAY_SEND_REGISTER:
-	push TEMP
-
-	ldi XH, high(TEMP_8_BYTE)
-	ldi XL, low(TEMP_8_BYTE)
-
-	rcall REGISTER_2_MEMORY_BIN
-
-	ldi XH, high(TEMP_8_BYTE)
-	ldi XL, low(TEMP_8_BYTE)
-
-	ldi TEMP, 8
-	DISPLAY_SEND_REGISTER__LOOP:
-	cpi TEMP, 0
-	breq DISPLAY_SEND_REGISTER__LOOP_END
-
-	ld r24, X+
-	ldi r25, 0x30 ; ASCII 0x30 = 0, 0x31 = 1
-	add r24, r25
-	rcall DISPLAY_SEND_CHARACTER
-
-	dec TEMP
-	rjmp DISPLAY_SEND_REGISTER__LOOP
-
-	DISPLAY_SEND_REGISTER__LOOP_END:
-
-	pop TEMP
-	ret
-
-
-; Copies the register value into an array in the memory
-; r24: Register value
-; X: base pointer to a 8 byte memory location where we will copy each bit
-;    of the register value
-;
-; e.g. r24 = 1101_1001
-;      memory = | 1 | 1 | 0 | 1 | 1 | 0 | 0 | 1 |
-REGISTER_2_MEMORY_BIN:
-	push TEMP
-	push TEMP2
-
-	; We will start from the "end" LSB to the "start" MSB
-	; Add 8 to the base pointer, then we will decrement it
-	; in each iteration of our loop below. Note: we use 8
-	; because we use pre-decrement not post.
-	; XH | XL  +  TEMP2 | TEMP
-	ldi TEMP, 8
-	ldi TEMP2, 0
-	add XL, TEMP
-	adc XH, TEMP2
-
-	ldi TEMP, 8
-	REGISTER_2_MEMORY_BIN__LOOP:
-	cpi TEMP, 0
-	breq REGISTER_2_MEMORY_BIN__LOOP_END
-	
-	mov TEMP2, r24
-	andi TEMP2, 0x01
-	st -X, TEMP2
-	lsr r24
-
-	dec TEMP
-	rjmp REGISTER_2_MEMORY_BIN__LOOP
-	REGISTER_2_MEMORY_BIN__LOOP_END:
-
-	pop TEMP2
-	pop TEMP
-	ret
-
-
 ; Checks the players desired direction from the JOYSTICK_BUFFER
 ; and verifies it is a valid movement for the current state, if
 ; it is update the DIRECTION memory value.
@@ -761,7 +665,9 @@ MOVE_DIRECTION_VALID:
 	; This is an invalid move, ignore joystick buffer direction.
 	rjmp MOVE_DIRECTION_VALID__END 
 
-	; TODO - comment
+	; We check the third element (from the top), since if the user picks up a
+	; drop and moves 'incorrectly' our checking of just the second element is
+	; not enough.
 	MOVE_DIRECTION_VALID__SECOND_CHECK:
 	ld r24, X+
 	ld r25, X+
@@ -1497,7 +1403,7 @@ GAME_DISPLAY_RAM_MAP_DISPLAY_RAM:
 
 	ret
 
-; Display sync status LED, Pin A1
+; Display sync status LED, Pin A0
 DISPLAY_SYNC_LED_INIT:
 	ldi TEMP, 0x01
 	out DDRA, TEMP
