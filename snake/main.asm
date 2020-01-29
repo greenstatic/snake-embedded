@@ -87,12 +87,12 @@ MAIN:
 	rcall GAME_INIT
 	rcall JOYSTICK_INIT
 
-	; TODO - remove
+	; Pre-render the game as part of initialization
 	rcall GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM
 	rcall GAME_DISPLAY_RAM_MAP_DISPLAY_RAM
 	rcall DROP_NEXT
 	rcall DROP_RENDER
-	; END TODO - remove
+	; End pre-render
 
 	; Main game loop
 	MAIN_GAME_LOOP:
@@ -107,10 +107,8 @@ MAIN:
 	rcall DISPLAY_SYNC_LED_BLINK
 	
 	
-	; 300 ms delay
+	; 200 ms delay
 	ldi r24, 200
-	rcall DELAY_Nms
-	ldi r24, 100
 	rcall DELAY_Nms
 
 	rjmp MAIN_GAME_LOOP
@@ -621,18 +619,50 @@ REGISTER_2_MEMORY_BIN:
 ; it is update the DIRECTION memory value.
 MOVE_DIRECTION_VALID:
 	push TEMP
+	push TEMP2
+	push TEMP3
+	
+	lds TEMP, JOYSTICK_BUFFER
 
-	; TODO - check if valid move
+	rcall SNAKE_HEAD_POS
+	mov r23, TEMP
+	rcall SNAKE_POS_TRANSFORM
+	mov TEMP2, r24 ; new X coordinate if joystick buffer direction is applied
+	mov TEMP3, r25 ; new Y coordinate if joystick buffer direction is applied
+
+	; Check if the second element (after head) in the snake position stack contains 
+	; the new X/Y coordinates, if it does ignore the joystick buffer direction
+	lds r24, SNAKE_POS_SIZE
+	cpi r24, 2 + 1
+	brlo MOVE_DIRECTION_VALID__UPDATE_DIRECTION ; only head is in the stack, skip this check
+
+	ldi XH, HIGH(SNAKE_POS)
+	ldi XL, LOW(SNAKE_POS)
+	subi r24, 2 + 2 ; since offset is at 0 not 1 (first 2), then to get the second last element 
+					; in the array (second 2)
+	ld r24, X+
+	ld r25, X+
+
+	cp r24, TEMP2
+	brne MOVE_DIRECTION_VALID__UPDATE_DIRECTION
+	cp r25, TEMP3
+	brne MOVE_DIRECTION_VALID__UPDATE_DIRECTION
+
+	; Second element in position stack is equal to the new head coordinates.
+	; This is an invalid move, ignore joystick buffer direction.
+	rjmp MOVE_DIRECTION_VALID__END 
 
 	; Update the direction from the joystick buffer if buffer is not set
 	; to DIRECTION_PREVIOUS
-	lds TEMP, JOYSTICK_BUFFER
+	MOVE_DIRECTION_VALID__UPDATE_DIRECTION:
 	cpi TEMP, DIRECTION_PREVIOUS
 	breq MOVE_DIRECTION_VALID__END
 	sts DIRECTION, TEMP
 
 	MOVE_DIRECTION_VALID__END:
 
+	pop TEMP3
+	pop TEMP2
 	pop TEMP
 	ret	
 
@@ -902,6 +932,57 @@ GAME_TICK:
 
 	; End of removal of first snake position stack element
 
+	pop TEMP2
+	pop TEMP
+	ret
+
+; Checks to see if the provided X/Y coordinate is a part
+; of the snake position stack (if it is a member of the stack)
+; r24: Input x coordinate
+; r25: Input y coordinate
+;
+; r25: Return value 1 if match otherwise 0
+SNAKE_POS_CONTAINS:
+	push TEMP
+	push TEMP2
+	push TEMP3
+
+	mov TEMP2, r24 ; x coordinate
+	mov TEMP3, r25 ; y coordinate
+
+	ldi XH, HIGH(SNAKE_POS)
+	ldi XL, LOW(SNAKE_POS)
+
+	lds TEMP, SNAKE_POS_SIZE
+
+	SNAKE_POS_CONTAINS__LOOP:
+	cpi TEMP, 0
+	breq SNAKE_POS_CONTAINS__LOOP_END
+
+	ld r24, X+
+	cp r24, TEMP2
+	brne SNAKE_POS_CONTAINS__LOOP_CONTINUE
+
+	ld r24, X+
+	cp r24, TEMP3
+	brne SNAKE_POS_CONTAINS__LOOP_CONTINUE
+
+	; Found match
+	ldi r25, 1
+	rjmp SNAKE_POS_CONTAINS__END
+
+	SNAKE_POS_CONTAINS__LOOP_CONTINUE:
+
+	dec TEMP
+	rjmp SNAKE_POS_CONTAINS__LOOP
+
+	SNAKE_POS_CONTAINS__LOOP_END:
+	; No match
+	ldi r25, 0
+
+	SNAKE_POS_CONTAINS__END:
+
+	pop TEMP3
 	pop TEMP2
 	pop TEMP
 	ret
