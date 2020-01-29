@@ -43,6 +43,9 @@
 #define COLLISION_DROP	1
 #define COLLISION_SELF	2
 
+#define TRUE 1
+#define FALSE 0
+
 
 ; We treat these register values as 'variables' with local scope, therefore
 ; we assume when we call a subroutine they will be pushed/popped by the subroutine
@@ -64,6 +67,7 @@ SNAKE_POS:			.byte (SNAKE_POS_MAX_LENGTH + 1) * 2; we store X,Y for one position
 TEMP_8_BYTE:	.byte 8
 RNG_NUMBER:		.byte 1
 TEMP_64_byte:	.byte 64 + 1 ; first byte should have written the size of the array
+
 
 .CSEG
 START:
@@ -112,6 +116,97 @@ MAIN:
 	rcall DELAY_Nms
 
 	rjmp MAIN_GAME_LOOP
+
+; Blocks until the button is pressed
+BUTTON_PRESS_WAIT:
+	; GPIO E0
+	BUTTON_PRESS_WAIT__LOOP:
+	in r24, PINE
+	andi r24, 0x01
+
+	cpi r24, 0
+	breq BUTTON_PRESS_WAIT__LOOP_END
+
+	rjmp BUTTON_PRESS_WAIT__LOOP
+
+	BUTTON_PRESS_WAIT__LOOP_END:
+	
+	; Minor 200ms delay
+	ldi r24, 200
+	rcall DELAY_Nms
+
+	ret
+
+; Renders the game over screen, showing the number of points
+; and waits for the user to press conitnue to restart the game.
+; Only jump into this subroutine, DO NOT CALL IT (rcall). Even
+; though we restart the game by jumping to START (therefore 
+; initializing the stack from the beginning), it is more
+; clear what is happening in the code.
+GAME_OVER_SCREEN:
+	rcall GAME_OVER_SCREEN_DISPLAY_PRINT
+	rcall BUTTON_PRESS_WAIT
+
+	rjmp START ; restart game
+
+
+; Sends to the display the text for the game over screen.
+GAME_OVER_SCREEN_DISPLAY_PRINT:
+	rcall DISPLAY_CLEAR
+
+	; First line
+	ldi r24, 0x82
+	rcall DISPLAY_SEND_COMMAND
+	ldi r24, 'G'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'A'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'M'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'E'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, ' '
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'O'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'V'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'E'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'R'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, ' '
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, '='
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, '('
+	rcall DISPLAY_SEND_CHARACTER
+
+	; Second line
+	ldi r24, 0xC2
+	rcall DISPLAY_SEND_COMMAND
+
+	ldi r24, 'P'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'O'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'I'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'N'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'T'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, 'S'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, ':'
+	rcall DISPLAY_SEND_CHARACTER
+	ldi r24, ' '
+	rcall DISPLAY_SEND_CHARACTER
+
+	lds r24, POINTS
+	rcall DISPLAY_SEND_DECIMAL
+
+	ret
 
 
 ; Call when the snake has collided with a drop. Increases the points and spawns
@@ -176,6 +271,19 @@ SNAKE_COLLISION_DETECTION:
 	mov TEMP, r24
 	mov TEMP2, r25
 
+	; Check if collision with self
+	SNAKE_COLLISION__CHECK_SELF:
+	mov r24, TEMP
+	mov r25, TEMP2
+	rcall SNAKE_POS_CONTAINS
+	cpi r25, TRUE
+	brne SNAKE_COLLISION__CHECK_DROP_1
+
+	; Collision with self detected
+	ldi r25, COLLISION_SELF
+	rjmp SNAKE_COLLISION__END
+
+	SNAKE_COLLISION__CHECK_DROP_1:
 	; Check if drop collision (upper part)
 	lds r24, DROP_COORDINATES
 	lds r25, DROP_COORDINATES + 1
@@ -188,25 +296,22 @@ SNAKE_COLLISION_DETECTION:
 	ldi r25, COLLISION_DROP
 	rjmp SNAKE_COLLISION__END
 
+	; Check if drop collision (bottom part)
 	SNAKE_COLLISION__CHECK_DROP_2:
 	lds r24, DROP_COORDINATES + 2
 	lds r25, DROP_COORDINATES + 3
 	
 	cp TEMP, r24
-	brne SNAKE_COLLISION__CHECK_SELF
+	brne SNAKE_COLLISION__NO_COLLISION
 	cp TEMP2, r25
-	brne SNAKE_COLLISION__CHECK_SELF
+	brne SNAKE_COLLISION__NO_COLLISION
 	; Drop collision
 	ldi r25, COLLISION_DROP
 	rjmp SNAKE_COLLISION__END
 	
 
-	; Check if collision with self
-	SNAKE_COLLISION__CHECK_SELF:
-	; TODO
-
 	; No collision
-	SNAKE_COLLISION__2:
+	SNAKE_COLLISION__NO_COLLISION:
 	ldi r25, COLLISION_NO
 
 	SNAKE_COLLISION__END:
@@ -214,7 +319,6 @@ SNAKE_COLLISION_DETECTION:
 	pop TEMP2
 	pop TEMP
 	ret
-
 
 
 ; Renders drops to the game display RAM
@@ -667,20 +771,30 @@ MOVE_DIRECTION_VALID:
 	ret	
 
 
-; Initialize the Joystick by turning on the ADC.
-; Joystick should be connected to PF0 (x) & PF1 (y).
+; Initialize the Joystick by turning on the ADC and configuring the switch.
+; Joystick should be connected to PF0 (x), PF1 (y), PE0 (sw).
 JOYSTICK_INIT:
 	push TEMP
 
-	; Setup the port
+	; Set the port for the switch GPIO E0 as an input pin
+	in TEMP, DDRE
+	andi TEMP, 0xFE
+	out DDRE, TEMP
+	
+	; Enable pull-up resistor for GPIO E0
+	in TEMP, PORTE
+	ori TEMP, 0x01
+	out PORTE, TEMP
+
+	; Setup the port for X/Y axis potenciometer
 	ldi TEMP, 0x00
 	sts DDRF, TEMP
 	
-	; Disable pull-up resistors
+	; Disable pull-up resistors for X/Y axis potenciometer
 	ldi TEMP, 0x00
 	sts PORTF, TEMP 
 
-	; Enable ADC
+	; Enable ADC for X/Y axis potenciometer
 	ldi TEMP, 0b1000_0111
 	out ADCSRA, TEMP
 
@@ -860,10 +974,10 @@ GAME_TICK:
 	mov TEMP, r24 ; new x-coordinate
 	mov TEMP2, r25 ; new y-coordinate
 
-	; TODO - check if snake hit obstacle
+	; Check if snake hit obstacle
 	rcall SNAKE_COLLISION_DETECTION
 	cpi r25, COLLISION_DROP
-	brne GAME_TICK__COLLISION_DONE
+	brne GAME_TICK__CHECK_COLLISION_SELF
 	
 	; Increment the X register by 2
 	pop XL
@@ -882,10 +996,12 @@ GAME_TICK:
 	rcall SNAKE_COLLIDED_WITH_DROP
 	rjmp GAME_TICK__COLLISION_DONE
 
-	GAME_TICK__1:
+	GAME_TICK__CHECK_COLLISION_SELF:
 	cpi r25, COLLISION_SELF
 	brne GAME_TICK__COLLISION_DONE
-	; TODO - react since collision with self
+	; Collision with self
+	rjmp GAME_OVER_SCREEN
+	; Should not be reachable when jumping to GAME_OVER_SCREEN
 	rjmp GAME_TICK__COLLISION_DONE
 
 	GAME_TICK__COLLISION_DONE:
@@ -941,7 +1057,7 @@ GAME_TICK:
 ; r24: Input x coordinate
 ; r25: Input y coordinate
 ;
-; r25: Return value 1 if match otherwise 0
+; r25: Return value TRUE if match otherwise FALSE
 SNAKE_POS_CONTAINS:
 	push TEMP
 	push TEMP2
@@ -960,25 +1076,27 @@ SNAKE_POS_CONTAINS:
 	breq SNAKE_POS_CONTAINS__LOOP_END
 
 	ld r24, X+
+	ld r25, X+
+
 	cp r24, TEMP2
 	brne SNAKE_POS_CONTAINS__LOOP_CONTINUE
 
-	ld r24, X+
-	cp r24, TEMP3
+	cp r25, TEMP3
 	brne SNAKE_POS_CONTAINS__LOOP_CONTINUE
 
 	; Found match
-	ldi r25, 1
+	ldi r25, TRUE
 	rjmp SNAKE_POS_CONTAINS__END
 
 	SNAKE_POS_CONTAINS__LOOP_CONTINUE:
 
 	dec TEMP
+	dec TEMP
 	rjmp SNAKE_POS_CONTAINS__LOOP
 
 	SNAKE_POS_CONTAINS__LOOP_END:
 	; No match
-	ldi r25, 0
+	ldi r25, FALSE
 
 	SNAKE_POS_CONTAINS__END:
 
