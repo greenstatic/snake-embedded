@@ -111,9 +111,9 @@ MAIN:
 	rcall DISPLAY_SYNC_LED_BLINK
 	
 	
-	; 200 ms delay
-	ldi r24, 200
-	rcall DELAY_Nms
+	; 50 ms delay
+	ldi r24, 50
+	rcall delay_nms
 
 	rjmp MAIN_GAME_LOOP
 
@@ -742,8 +742,27 @@ MOVE_DIRECTION_VALID:
 
 	ldi XH, HIGH(SNAKE_POS)
 	ldi XL, LOW(SNAKE_POS)
-	subi r24, 2 + 2 ; since offset is at 0 not 1 (first 2), then to get the second last element 
-					; in the array (second 2)
+	subi r24, 2 + 4 ; since offset is at 0 not 1 (the 2), then to get the third last element 
+					; in the array (the 4)
+	; XH | XL  +  r25 | r24
+	ldi r25, 0
+	add XL, r24
+	adc XH, r25
+
+	ld r24, X+
+	ld r25, X+
+
+	cp r24, TEMP2
+	brne MOVE_DIRECTION_VALID__SECOND_CHECK
+	cp r25, TEMP3
+	brne MOVE_DIRECTION_VALID__SECOND_CHECK
+
+	; Second element in position stack is equal to the new head coordinates.
+	; This is an invalid move, ignore joystick buffer direction.
+	rjmp MOVE_DIRECTION_VALID__END 
+
+	; TODO - comment
+	MOVE_DIRECTION_VALID__SECOND_CHECK:
 	ld r24, X+
 	ld r25, X+
 
@@ -752,9 +771,10 @@ MOVE_DIRECTION_VALID:
 	cp r25, TEMP3
 	brne MOVE_DIRECTION_VALID__UPDATE_DIRECTION
 
-	; Second element in position stack is equal to the new head coordinates.
+	; third element in position stack is equal to the new head coordinates.
 	; This is an invalid move, ignore joystick buffer direction.
 	rjmp MOVE_DIRECTION_VALID__END 
+
 
 	; Update the direction from the joystick buffer if buffer is not set
 	; to DIRECTION_PREVIOUS
