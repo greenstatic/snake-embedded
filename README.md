@@ -13,8 +13,8 @@ On game over press the switch on the joystick to start a new game.
 * Joystick module [similar to this](http://www.energiazero.org/arduino_sensori/joystick_module.pdf)
 
 ### Pins
-Display: ET-CLCD (see board details) \
-LED (blinks when display refreshes): GPIO A0 \
-Joystick X-axis: GPIO F0 \
-Joystick Y-axis: GPIO F1 \
-Joystick switch: GPIO E0 
+* Display: ET-CLCD (see board details)
+* LED (blinks when display refreshes): GPIO A0
+* Joystick X-axis: GPIO F0
+* Joystick Y-axis: GPIO F1
+* Joystick switch: GPIO E0 
