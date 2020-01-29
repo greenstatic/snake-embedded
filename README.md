@@ -11,7 +11,7 @@ On game over press the switch on the joystick to start a new game.
 ## Electronics
 * Microcontroller: [Microchip ATmega128 8-bit AVR](https://www.microchip.com/wwwproducts/en/ATMEGA128)
 * Development board: [ATMEGACONT128](https://futurlec.com/ATMEGA_Controller.shtml)
-* Display: [DEVLCD (HD4470 compatible)](https://www.futurlec.com/DevBoardAccessories.shtml)
+* Display: [DEVLCD (HD44780 compatible)](https://www.futurlec.com/DevBoardAccessories.shtml)
 * Joystick module [similar to this](http://www.energiazero.org/arduino_sensori/joystick_module.pdf)
 
 ### Pins
