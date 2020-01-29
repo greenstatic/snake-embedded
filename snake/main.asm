@@ -19,6 +19,7 @@
 #define DISPLAY_CHAR_HEAD_TOP_BODY_BOTTOM	0x05
 #define DISPLAY_CHAR_BODY_TOP_HEAD_BOTTOM	0x06
 #define DISPLAY_CHAR_EMPTY					0x20
+#define DISPLAY_CHAR_DROP					0x2A
 #define DISPLAY_CHAR_UNKNOWN				0x21
 
 #define SNAKE_POS_MAX_LENGTH 64
@@ -38,6 +39,10 @@
 #define RNG_M		31
 #define RNG_A		3
 
+#define COLLISION_NO	0
+#define COLLISION_DROP	1
+#define COLLISION_SELF	2
+
 
 ; We treat these register values as 'variables' with local scope, therefore
 ; we assume when we call a subroutine they will be pushed/popped by the subroutine
@@ -51,14 +56,14 @@ DISPLAY_RAM:		.byte DISPLAY_RAM_SIZE
 POINTS:				.byte 1
 DIRECTION:			.byte 1
 JOYSTICK_BUFFER:	.byte 1
-DROP_COORDINATES:	.byte 2
+DROP_COORDINATES:	.byte 2 * 2 ; two drops with x,y
 SNAKE_POS_SIZE:		.byte 1
 SNAKE_POS:			.byte (SNAKE_POS_MAX_LENGTH + 1) * 2; we store X,Y for one position
 													  ; +1 to add a buffer when we add the new
 													  ; head and remove the last element
 TEMP_8_BYTE:	.byte 8
 RNG_NUMBER:		.byte 1
-
+TEMP_64_byte:	.byte 64 + 1 ; first byte should have written the size of the array
 
 .CSEG
 START:
@@ -66,7 +71,7 @@ START:
 	ldi TEMP, LOW(RAMEND)
 	out SPL, TEMP
 	ldi TEMP, HIGH(RAMEND)
-	out SPH, TEMP	
+	out SPH, TEMP
 
 MAIN:
 	rcall DISPLAY_INIT
@@ -81,7 +86,14 @@ MAIN:
 
 	rcall GAME_INIT
 	rcall JOYSTICK_INIT
-	
+
+	; TODO - remove
+	rcall GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM
+	rcall GAME_DISPLAY_RAM_MAP_DISPLAY_RAM
+	rcall DROP_NEXT
+	rcall DROP_RENDER
+	; END TODO - remove
+
 	; Main game loop
 	MAIN_GAME_LOOP:
 	rcall JOYSTICK_READ
@@ -89,9 +101,11 @@ MAIN:
 
 	rcall GAME_TICK
 	rcall GAME_SNAKE_POSITION_MAP_GAME_DISPLAY_RAM
+	rcall DROP_RENDER
 	rcall GAME_DISPLAY_RAM_MAP_DISPLAY_RAM
 	rcall DISPLAY_SYNC
 	rcall DISPLAY_SYNC_LED_BLINK
+	
 	
 	; 300 ms delay
 	ldi r24, 200
@@ -100,6 +114,247 @@ MAIN:
 	rcall DELAY_Nms
 
 	rjmp MAIN_GAME_LOOP
+
+
+; Call when the snake has collided with a drop. Increases the points and spawns
+; a new drop.
+; r24: Snake head X-axis
+; r25: Snake head Y-axis
+SNAKE_COLLIDED_WITH_DROP:
+	push TEMP
+	push TEMP2
+	push TEMP3
+
+	mov TEMP2, r24
+	mov TEMP3, r25
+
+	; Increment points by one
+	lds r24, POINTS
+	inc r24
+	sts POINTS, r24
+
+
+	; Add's the drops position to the snakes position stack
+	; Get stack size
+	lds TEMP, SNAKE_POS_SIZE
+	
+	; Set pointer to top most element
+	ldi XH, high(SNAKE_POS)
+	ldi XL, low(SNAKE_POS)
+	
+	; XH | XL  +  r24 | TEMP
+	ldi r24, 0
+	add XL, TEMP
+	adc XH, r24
+
+	; Create a new element on the top with the coordinates of
+	; the drop
+	st x+, TEMP2
+	st x+, TEMP3
+
+	; Increment stack size
+	lds TEMP, SNAKE_POS_SIZE
+	inc TEMP
+	inc TEMP
+	sts SNAKE_POS_SIZE, TEMP
+
+	rcall DROP_NEXT
+	
+	pop TEMP3
+	pop TEMP2
+	pop TEMP
+	ret
+
+
+; Checks if the snake has collided with anything.
+; r24: Input register with snake head X coordinate (game display coordinate)
+; r25: Input register with snake head Y coordinate (game display coordinate)
+;
+; r25: Return register value with collision, if any (COLLISION_NO, COLLISION_DROP, COLLISION_SELF).
+SNAKE_COLLISION_DETECTION:
+	push TEMP
+	push TEMP2
+
+	mov TEMP, r24
+	mov TEMP2, r25
+
+	; Check if drop collision (upper part)
+	lds r24, DROP_COORDINATES
+	lds r25, DROP_COORDINATES + 1
+
+	cp TEMP, r24
+	brne SNAKE_COLLISION__CHECK_DROP_2
+	cp TEMP2, r25
+	brne SNAKE_COLLISION__CHECK_DROP_2
+	; Drop collision
+	ldi r25, COLLISION_DROP
+	rjmp SNAKE_COLLISION__END
+
+	SNAKE_COLLISION__CHECK_DROP_2:
+	lds r24, DROP_COORDINATES + 2
+	lds r25, DROP_COORDINATES + 3
+	
+	cp TEMP, r24
+	brne SNAKE_COLLISION__CHECK_SELF
+	cp TEMP2, r25
+	brne SNAKE_COLLISION__CHECK_SELF
+	; Drop collision
+	ldi r25, COLLISION_DROP
+	rjmp SNAKE_COLLISION__END
+	
+
+	; Check if collision with self
+	SNAKE_COLLISION__CHECK_SELF:
+	; TODO
+
+	; No collision
+	SNAKE_COLLISION__2:
+	ldi r25, COLLISION_NO
+
+	SNAKE_COLLISION__END:
+
+	pop TEMP2
+	pop TEMP
+	ret
+
+
+
+; Renders drops to the game display RAM
+DROP_RENDER:
+	lds r24, DROP_COORDINATES
+	lds r25, DROP_COORDINATES + 1
+	ldi r23, SPRITE_DROP
+	rcall GAME_DISPLAY_WRITE_XY
+
+	lds r24, DROP_COORDINATES + 2
+	lds r25, DROP_COORDINATES + 3
+	ldi r23, SPRITE_DROP
+	rcall GAME_DISPLAY_WRITE_XY
+
+	ret
+
+
+; Places the drop with respect to the game state (position of the snake)
+DROP_NEXT:
+	push TEMP
+
+	ldi XH, high(TEMP_64_byte)
+	ldi XL, low(TEMP_64_byte)
+	rcall SNAKE_POS_FREE_COORDINATES
+	
+	ldi XH, high(TEMP_64_byte)
+	ldi XL, low(TEMP_64_byte)
+	
+	ld TEMP, X+ ; Number of free characters (possible placements of drop)
+	; X now points to the array
+
+	rcall RNG_NEXT
+	mov r24, r25
+	mov r25, TEMP
+	rcall MOD
+	; r24 now contains the offset of the array which points to the display RAM offset
+	; where the drop is going to be
+	; XH | XL  +  r25 | r24
+	ldi r25, 0
+	add XL, r24
+	adc XH, r25
+
+	ld TEMP, X ; The offset of display RAM where the drop is going to be
+
+	; Assume we have only two lines on our display
+	cpi TEMP, DISPLAY_NO_CHARACTERS_PER_LINE
+	brlo DROP_COORDINATES_UPDATE__TRANSFORM_DISPLAY_OFFSET_FIRST_LINE
+	; Second character line
+	subi TEMP, DISPLAY_NO_CHARACTERS_PER_LINE
+	sts DROP_COORDINATES, TEMP
+	ldi r24, 2
+	sts DROP_COORDINATES + 1, r24
+
+	sts DROP_COORDINATES + 2, TEMP
+	ldi r24, 3
+	sts DROP_COORDINATES + 3, r24
+
+	rjmp DROP_COORDINATES_UPDATE__TRANSFORM_DISPLAY_OFFSET_END
+
+	DROP_COORDINATES_UPDATE__TRANSFORM_DISPLAY_OFFSET_FIRST_LINE:
+	; First character line
+	sts DROP_COORDINATES, TEMP
+	ldi r24, 0
+	sts DROP_COORDINATES + 1, r24
+
+	sts DROP_COORDINATES + 2, TEMP
+	ldi r24, 1
+	sts DROP_COORDINATES + 3, r24
+
+	DROP_COORDINATES_UPDATE__TRANSFORM_DISPLAY_OFFSET_END:
+
+	pop TEMP
+	ret
+
+; Saves into memory the offsets of the character display RAM which are free (empty) 
+; in the game world.
+; X: Base pointer to block of memory where we can write the empty character offsets
+SNAKE_POS_FREE_COORDINATES:
+	push TEMP
+	push TEMP2
+
+	push XH
+	push XL
+	adiw X, 1 ; first element is for the size which we will write in the end
+
+	ldi YH, high(DISPLAY_RAM)
+	ldi YL, low(DISPLAY_RAM)
+
+	ldi TEMP2, 0 ; size counter of empty chars
+	ldi TEMP, 0
+
+	SNAKE_POS_FREE_COORDINATES__LOOP:
+	cpi TEMP, DISPLAY_RAM_SIZE
+	breq SNAKE_POS_FREE_COORDINATES__LOOP_END
+
+	ld r24, Y+
+	cpi r24, DISPLAY_CHAR_EMPTY
+	brne SNAKE_POS_FREE_COORDINATES__LOOP_CONTINUE
+
+	; write the offset into memory where the empty char is in display RAM
+	st X+, TEMP
+
+	inc TEMP2
+	SNAKE_POS_FREE_COORDINATES__LOOP_CONTINUE:
+	inc TEMP
+	rjmp SNAKE_POS_FREE_COORDINATES__LOOP
+	
+	SNAKE_POS_FREE_COORDINATES__LOOP_END:
+	; Write the size of the array
+	pop XL
+	pop XH
+
+	st X, TEMP2
+
+	pop TEMP2
+	pop TEMP
+	ret
+
+; Clears a block of memory.
+; r24: Value to replace the block of memory with
+; r25: Length of memory to clear
+; X: Base pointer to the block of memory
+ARRAY_CLEAR:
+	push TEMP
+
+	ARRAY_CLEAR__LOOP:
+	cpi r25, 0
+	breq ARRAY_CLEAR__END
+
+	ld r24, X+
+
+	dec r25
+	rjmp ARRAY_CLEAR__LOOP
+
+	ARRAY_CLEAR__END:
+	pop TEMP
+	ret
+
 
 ; Initialize the pseudo random number generator.
 RNG_INIT:
@@ -553,7 +808,7 @@ GAME_INIT:
 	sts DIRECTION, TEMP
 
 	; Initialize the joystick buffer
-	ldi TEMP, DIRECTION_RIGHT
+	ldi TEMP, DIRECTION_PREVIOUS
 	sts JOYSTICK_BUFFER, TEMP
 
 	ret
@@ -564,12 +819,48 @@ GAME_TICK:
 	push TEMP2
 
 	rcall SNAKE_HEAD_POS
+	push XH
+	push XL
 
 	lds r23, DIRECTION
 	rcall SNAKE_POS_TRANSFORM
+	push r24
+	push r25
 
 	; TODO - check if snake hit obstacle
+	rcall SNAKE_COLLISION_DETECTION
+	cpi r25, COLLISION_DROP
+	brne GAME_TICK__COLLISION_DONE
+	
+	pop r25
+	pop r24
+	pop XL
+	pop XH
 
+	; XH | XL  +  r24 | r25
+	ldi r24, 0
+	ldi r25, 2
+	add XL, r25
+	adc XH, r24
+
+	push XH
+	push XL
+	push r24
+	push r25
+	rcall SNAKE_COLLIDED_WITH_DROP
+	rjmp GAME_TICK__COLLISION_DONE
+
+	GAME_TICK__1:
+	cpi r25, COLLISION_SELF
+	brne GAME_TICK__COLLISION_DONE
+	; TODO - react since collision with self
+	rjmp GAME_TICK__COLLISION_DONE
+
+	GAME_TICK__COLLISION_DONE:
+	pop r25
+	pop r24
+	pop XL
+	pop XH
 
 	; Push new head postion to snake position stack and increment the stack size counter
 	st X+, r24
@@ -908,7 +1199,22 @@ GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER:
 	ldi r25, DISPLAY_CHAR_HEAD_TOP_BODY_BOTTOM
 	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
 
+
 	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8:
+	; t = Drop or b = Drop => 'Drop'
+	cpi r24, SPRITE_DROP
+	breq GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8_
+	cpi r25, SPRITE_DROP
+	breq GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8_
+	
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_UNKNOWN
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_8_:
+	ldi r25, DISPLAY_CHAR_DROP
+	rjmp GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_RETURN
+
+
+	GAME_DISPLAY_CHARACTER_MAP_DISPLAY_CHARACTER_UNKNOWN:
 	; SOMETHING ELSE??!?! Return the 'unknown' character
 	ldi r25, DISPLAY_CHAR_UNKNOWN
 
@@ -1212,58 +1518,6 @@ SPRITE_CREATE:
 	ret
 	
 
-; Sends "Hello World!" to the display. Do not forget to rcall DISPLAY_INIT first!
-DISPLAY_HELLO_WORLD:
-	; Send letter H
-	ldi r24, 0x48
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter e
-	ldi r24, 0x65
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter l
-	ldi r24, 0x6C
-	rcall DISPLAY_SEND_CHARACTER
-	
-	; Send letter l
-	ldi r24, 0x6C
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter o
-	ldi r24, 0x6F
-	rcall DISPLAY_SEND_CHARACTER
-	
-	; Send 'space'
-	ldi r24, 0x20
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter W
-	ldi r24, 0x57
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter o
-	ldi r24, 0x6F
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter r
-	ldi r24, 0x72
-	rcall DISPLAY_SEND_CHARACTER
-	
-	; Send letter l
-	ldi r24, 0x6C
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send letter d
-	ldi r24, 0x64
-	rcall DISPLAY_SEND_CHARACTER
-
-	; Send character '!'
-	ldi r24, 0x21
-	rcall DISPLAY_SEND_CHARACTER
-
-	ret
-
 ; Initializes the Hitachi HD44780U display in 4-bit mode with the cursor and blinking turned on.
 ; Connect the following pins:
 ;	GPIO_PORT_G_0 -> DISPLAY_DATA_4
@@ -1412,8 +1666,7 @@ DISPLAY_SEND:
 	ret
 
 
-; ====== Routines ======
-; DELAY_Nms routine - Delay for n milliseconds
+; Delay for n milliseconds
 ; Clock frequency must be 16 Mhz. 
 ; The parameter n must be:
 ; 1 <= n <= 255
