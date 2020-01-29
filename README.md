@@ -3,6 +3,8 @@ Classic Snake game written in AVR assembler for the ATmega128 8-bit Microcontrol
 
 On game over press the switch on the joystick to start a new game.
 
+[Demo YouTube video CLICK HERE](https://www.youtube.com/watch?v=cU4AgE5BFRI)
+
 ![](./docs/image_snake.jpg)
 
 
